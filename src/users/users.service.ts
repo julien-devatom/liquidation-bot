@@ -4,6 +4,7 @@ import {
   BalanceWithMarket,
   ContractService,
   MarketConfig,
+  UserConfig,
 } from "./contract/contract.service";
 import { StorageService } from "./storage/storage.service";
 import * as fs from "fs";
@@ -12,7 +13,7 @@ import { formatEther, formatUnits } from "ethers/lib/utils";
 
 @Injectable()
 export class UsersService {
-  private LIMIT_ACCOUNTS_TO_TRACK = 10;
+  private LIMIT_ACCOUNTS_TO_TRACK = 80;
   private markets: MarketConfig[];
   private tracked: string[];
   private readonly logger = new Logger(UsersService.name);
@@ -51,18 +52,20 @@ export class UsersService {
     if (accountsToTrack.length < this.LIMIT_ACCOUNTS_TO_TRACK) {
       let addresses = await this.storage.getAllSavedAccounts();
       if (addresses.length === 0) addresses = await this._queryAccounts();
-      let accountsData = [];
+      let accountsData: (UserConfig & { address: string })[] = [];
       const loop = 500;
       let offset = 0;
+      // parallelize RPC call 500 by 500
       while (offset < addresses.length) {
         const accountsToCompute = addresses.slice(
           offset,
           Math.min(offset + loop, addresses.length),
         );
         const loopAccountData = await Promise.all(
-          accountsToCompute.map(async (address, i) => {
-            this.logger.debug(`Get userConfig for account ${i}: ${address}`);
+          accountsToCompute.map(async (address) => {
+            //this.logger.debug(`Get userConfig for account ${i}: ${address}`);
             const config = await this.contractService.getUserConfig(address);
+            this.logger.verbose(config);
             return {
               ...config,
               address,
@@ -70,12 +73,14 @@ export class UsersService {
           }),
         );
         accountsData = [...accountsData, ...loopAccountData];
+        this.logger.debug(`${accountsData.length} HF fetched`);
         offset += loop;
       }
 
       const sorted = accountsData
+        .filter((acc) => !!acc.healthFactor)
         .sort((acc1, acc2) =>
-          acc1.healthFactor.gt(acc2.healthFactor) ? 1 : -1,
+          BigNumber.from(acc1.healthFactor).gt(acc2.healthFactor) ? 1 : -1,
         )
         .filter(
           (acc) =>
