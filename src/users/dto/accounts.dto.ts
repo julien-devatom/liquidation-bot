@@ -9,7 +9,8 @@ export interface AccountWithBalanceDTO {
 export interface Balance {
   asset: Asset;
   balanceSupplied: string;
-  balanceBorrowed: string;
+  balanceVBorrowed: string;
+  balanceSBorrowed: string;
   borrowIndex: string;
 }
 

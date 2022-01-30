@@ -38,8 +38,22 @@ export class StorageService {
   }
 
   async addTrackedAccount(acc: string): Promise<void> {
-    if (!(await this.redis.sismember(this.ACCOUNTS_BLACKLIST, acc)))
+    if (!(await this.isBlackListed(acc)))
       await this.redis.sadd(this.ACCOUNTS_TO_TRACK, acc);
+  }
+
+  async addAccountsToTrack(acc: string[], limit: number): Promise<string[]> {
+    const accs = acc.filter(async (acc) => !(await this.isBlackListed(acc)));
+    await this.redis.sadd(this.ACCOUNTS_TO_TRACK, accs.slice(0, limit));
+    return accs.slice(0, limit);
+  }
+
+  async isBlackListed(acc: string): Promise<boolean> {
+    return !!(await this.redis.sismember(this.ACCOUNTS_BLACKLIST, acc));
+  }
+
+  async getAddressesToTrack(): Promise<string[]> {
+    return this.redis.smembers(this.ACCOUNTS_TO_TRACK);
   }
 
   async removeTrackedAccount(acc: string[]): Promise<void> {
