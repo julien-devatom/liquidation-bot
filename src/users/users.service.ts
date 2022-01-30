@@ -8,7 +8,7 @@ import {
 } from "./contract/contract.service";
 import { StorageService } from "./storage/storage.service";
 import * as fs from "fs";
-import { BigNumber, ethers } from "ethers";
+import { BigNumber, ContractTransaction, ethers } from "ethers";
 import { formatEther, formatUnits } from "ethers/lib/utils";
 
 @Injectable()
@@ -196,11 +196,30 @@ export class UsersService {
     const balances = await this._getUserBalances(accountAddress);
     const repayBalance = this._selectDebtToken(balances);
     const collateralBalance = this._selectCollateralToken(balances);
-    const debtAmount = this._selectDebtAmount(repayBalance, collateralBalance);
+    const debtAmount = repayBalance.currentVariableDebt.div(2); //this._selectDebtAmount(repayBalance, collateralBalance);
+    const tx: ContractTransaction = await this.contractService.liquidate(
+      repayBalance.market.aTokenAddress,
+      collateralBalance.market.aTokenAddress,
+      accountAddress,
+      debtAmount,
+    );
+    this.logger.debug(`Liquidation transaction : ${tx.hash}
+      block : ${tx.blockNumber}
+    `);
+    let err = null;
+    await tx.wait().catch((e) => (err = e));
+    if (err !== null) {
+      this.logger.error("Liquidation fail");
+      this.logger.error(err);
+    } else {
+      this.logger.log("Liquidation successful !!");
+    }
+
     const amountRewarded = debtAmount
       .mul(repayBalance.market.ethPrice)
       .mul(collateralBalance.market.decimals)
       .div(repayBalance.market.decimals)
+      .div(collateralBalance.market.ethPrice)
       .mul(collateralBalance.market.liquidationBonus)
       .div(10000);
     //liquidation call
@@ -230,6 +249,7 @@ export class UsersService {
       `liquidations/${Date.now()}.json`,
       JSON.stringify(liquidationParams, null, 4),
     );
+    process.exit(err ? 0 : 1);
   }
 
   _selectDebtAmount(

@@ -1,8 +1,9 @@
 import { Injectable } from "@nestjs/common";
-import { BigNumber, ethers } from "ethers";
+import { BigNumber, ethers, Wallet } from "ethers";
 import * as LendingPool from "../../abis/lendingPool.json";
 import * as DataProvider from "../../abis/ProtocolDataProvider.json";
 import * as PriceOracle from "../../abis/PriceOracle.json";
+import * as LiquidatorForAave from "../../abis/LiquidatorForAave.json";
 
 export interface MarketConfig {
   address: string;
@@ -34,6 +35,10 @@ export class ContractService {
     PRICE_ORACLE: {
       address: "0x0229f777b0fab107f9591a41d5f02e4e98db6f2d",
       abi: PriceOracle,
+    },
+    LIQUIDATION_WRAPPER: {
+      address: process.env.LIQUIDATOR_CONTRACT_ADDRESS,
+      abi: LiquidatorForAave,
     },
     network: {
       chainID: 137,
@@ -136,6 +141,32 @@ export class ContractService {
           ),
         )
     );
+  }
+
+  async liquidate(
+    debtAssetAToken: string,
+    collateralAssetAToken: string,
+    borrower: string,
+    debtAmount: BigNumber,
+  ) {
+    const signer = new Wallet(process.env.PRIVATE_KEY, this.provider);
+
+    const liquidationContract = new ethers.Contract(
+      this.config.LIQUIDATION_WRAPPER.address,
+      this.config.LIQUIDATION_WRAPPER.abi,
+      signer,
+    );
+    return liquidationContract
+      .connect(signer)
+      .liquidate(
+        borrower,
+        debtAssetAToken,
+        collateralAssetAToken,
+        debtAmount.toString(),
+        {
+          gasLimit: 28_000_000, // gasLimit is 30M for polygon
+        },
+      );
   }
 }
 
