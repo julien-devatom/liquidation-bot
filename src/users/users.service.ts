@@ -4,16 +4,17 @@ import {
   BalanceWithMarket,
   ContractService,
   MarketConfig,
+  TransactionResponse,
   UserConfig,
 } from "./contract/contract.service";
 import { StorageService } from "./storage/storage.service";
 import * as fs from "fs";
 import { BigNumber, ContractTransaction, ethers } from "ethers";
-import { formatEther, formatUnits } from "ethers/lib/utils";
+import { formatEther, formatUnits, parseEther } from "ethers/lib/utils";
 
 @Injectable()
 export class UsersService {
-  private LIMIT_ACCOUNTS_TO_TRACK = 80;
+  private LIMIT_ACCOUNTS_TO_TRACK = 200;
   private markets: MarketConfig[];
   private tracked: string[];
   private readonly logger = new Logger(UsersService.name);
@@ -36,7 +37,7 @@ export class UsersService {
     this.logger.debug("Start Tracking of accounts");
     while (true) {
       await this._loop();
-      await sleep(10000); // wait during 10s
+      //await sleep(10000); // wait during 10s
     }
   }
 
@@ -76,15 +77,15 @@ export class UsersService {
         this.logger.debug(`${accountsData.length} HF fetched`);
         offset += loop;
       }
-
       const sorted = accountsData
         .filter((acc) => !!acc.healthFactor)
         .sort((acc1, acc2) =>
           BigNumber.from(acc1.healthFactor).gt(acc2.healthFactor) ? 1 : -1,
         )
+
         .filter(
           (acc) =>
-            acc.totalDebtETH.gt(ethers.utils.parseEther("0.001")) &&
+            acc.totalDebtETH.gt(ethers.utils.parseEther("0.0001")) &&
             acc.healthFactor.gt(ethers.utils.parseEther("1")),
           // we suppose that, if an account is not already liquidated is due to a no benefical liquidation
         ); // 0.01 ETH
@@ -140,6 +141,7 @@ export class UsersService {
   }
 
   async _loop() {
+    let minHF = parseEther("10");
     const previousTracked = this.tracked;
     this.tracked = await Promise.all(
       this.tracked.map(async (accountAddress) => {
@@ -147,33 +149,42 @@ export class UsersService {
           accountAddress,
         );
         let toRemove = false;
-
-        if (userData.healthFactor.lte(ethers.utils.parseEther("1"))) {
+        if (!userData?.healthFactor) {
+          toRemove = true;
+          this.logger.debug(
+            `Remove account ${accountAddress} due to an error during HF computation`,
+          );
+        } else if (userData.healthFactor.lte(ethers.utils.parseEther("1"))) {
+          console.time(`liquidation#${accountAddress.toLowerCase()}`);
           this._liquidateAccount(accountAddress);
           toRemove = true;
-        } else if (userData.healthFactor.gt(ethers.utils.parseEther("1.004"))) {
+        } else if (userData.healthFactor.gt(ethers.utils.parseEther("1.01"))) {
           this.logger.debug(
             `account ${accountAddress} untracked, due to a HF equal to ${formatEther(
               userData.healthFactor,
-            )} > 1.004 `,
+            )} > 1.01 `,
           );
           toRemove = true;
         }
         if (toRemove) {
           this.storage.removeTrackedAccount([accountAddress]);
+        } else {
+          if (minHF.gt(userData.healthFactor)) {
+            minHF = userData.healthFactor;
+          }
         }
-        this.logger.debug(
-          `Account : ${accountAddress}: ${formatEther(userData.healthFactor)}`,
-        );
+        // this.logger.debug(
+        //   `Account : ${accountAddress}: ${formatEther(userData.healthFactor)}`,
+        // );
         if (toRemove) {
           this.logger.debug(
-            `Account ${accountAddress} removed with HF ${formatEther(
-              userData.healthFactor,
-            )}`,
+            `Account ${accountAddress} removed with HF ${
+              userData?.healthFactor ? formatEther(userData.healthFactor) : ""
+            }`,
           );
         }
         return {
-          hf: userData.healthFactor,
+          hf: userData?.healthFactor,
           toRemove,
           address: accountAddress,
         };
@@ -187,34 +198,39 @@ export class UsersService {
     this.logger.debug(
       `${this.tracked.length} accounts tracked, ${
         previousTracked.length - this.tracked.length
-      } accounts liquidated or untracked`,
+      } accounts liquidated or untracked, min HF = ${formatEther(minHF)}`,
     );
   }
 
   async _liquidateAccount(accountAddress: string) {
     await this._initMarkets(); // update price
+
+    const stableCoinsATokens = [];
     const balances = await this._getUserBalances(accountAddress);
     const repayBalance = this._selectDebtToken(balances);
     const collateralBalance = this._selectCollateralToken(balances);
     const debtAmount = repayBalance.currentVariableDebt.div(2); //this._selectDebtAmount(repayBalance, collateralBalance);
+    const debtETH = debtAmount
+      .mul(repayBalance.market.ethPrice)
+      .div(BigNumber.from(10).pow(repayBalance.market.decimals));
+    const gasPriceBase = gasFromdebtETH(debtETH);
+    const gasPrice = BigNumber.from(gasPriceBase).mul(
+      BigNumber.from(10).pow(9),
+    );
+    this.logger.debug(
+      `Gas price : ${gasPrice.toString()}, gasPriceBase: ${gasPriceBase}`,
+    );
     const tx: ContractTransaction = await this.contractService.liquidate(
       repayBalance.market.aTokenAddress,
       collateralBalance.market.aTokenAddress,
       accountAddress,
       debtAmount,
+      gasPrice,
     );
     this.logger.debug(`Liquidation transaction : ${tx.hash}
       block : ${tx.blockNumber}
+      from: ${tx.from}
     `);
-    let err = null;
-    await tx.wait().catch((e) => (err = e));
-    if (err !== null) {
-      this.logger.error("Liquidation fail");
-      this.logger.error(err);
-    } else {
-      this.logger.log("Liquidation successful !!");
-    }
-
     const amountRewarded = debtAmount
       .mul(repayBalance.market.ethPrice)
       .mul(collateralBalance.market.decimals)
@@ -222,10 +238,12 @@ export class UsersService {
       .div(collateralBalance.market.ethPrice)
       .mul(collateralBalance.market.liquidationBonus)
       .div(10000);
+
+    // const flashLoanAmountWithFeesInDebtToken = debtAmount.mul(10009).div(10000);
+    // const bonusAmountWith;
     //liquidation call
     this.logger.debug(
       `
-      
       LIQUIDATION : ${accountAddress} at ${Date.now() / 1000} with parameters :
       Collateral : ${collateralBalance.market.symbol}
       Debt : ${ethers.utils.formatUnits(
@@ -249,7 +267,7 @@ export class UsersService {
       `liquidations/${Date.now()}.json`,
       JSON.stringify(liquidationParams, null, 4),
     );
-    process.exit(err ? 0 : 1);
+    mempoolTracking(tx, accountAddress, this.contractService.provider);
   }
 
   _selectDebtAmount(
@@ -278,7 +296,7 @@ export class UsersService {
         selector: b.market.address,
         amount: b.currentVariableDebt
           .mul(b.market.ethPrice)
-          .mul(BigNumber.from(10).pow(18 - b.market.decimals)),
+          .div(BigNumber.from(10).pow(b.market.decimals)),
       }))
       .sort((b1, b2) => (b1.amount.lt(b2.amount) ? 1 : -1));
     return balances.find(
@@ -292,7 +310,7 @@ export class UsersService {
         selector: b.market.address,
         amount: b.currentATokenBalance
           .mul(b.market.ethPrice)
-          .mul(BigNumber.from(10).pow(18 - b.market.decimals))
+          .div(BigNumber.from(10).pow(b.market.decimals))
           .mul(b.market.liquidationBonus),
       }))
       .sort((b1, b2) => (b1.amount.lt(b2.amount) ? 1 : -1));
@@ -338,3 +356,120 @@ export class UsersService {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const gasFromdebtETH = (debtEth: BigNumber) => {
+  const debt = +formatEther(debtEth);
+  const A = 29.9895;
+  const k = 3.50691;
+  const gasCost = Math.floor(Math.min(10000, A * Math.exp(k * debt)));
+  console.log("GWEI amount for gas :" + gasCost.toString());
+  return gasCost;
+};
+
+async function mempoolTracking(
+  myTx: TransactionResponse,
+  borrowerAddress: string,
+  provider,
+) {
+  const startTime = Date.now();
+  const WSS_ENDPOINT =
+    "wss://polygon-mainnet.g.alchemy.com/v2/8_CtN09YVwbPJkIEjFijDf5y4M6wmUD0";
+  const WsProvider = new ethers.providers.WebSocketProvider(
+    WSS_ENDPOINT,
+    provider.network.chainId,
+  );
+  let editedTxHash = [myTx.hash];
+  const {
+    from,
+    to,
+    nonce,
+    gasLimit,
+    gasPrice,
+    data,
+    value,
+    chainId,
+    type,
+    accessList,
+  } = myTx;
+  myTx
+    .wait()
+    .then((r) => {
+      WsProvider.removeAllListeners("pending");
+      console.log(
+        "Stop mempool tracking with successful transaction without gas increment",
+      );
+      console.timeEnd(`liquidation#${borrowerAddress.toLowerCase()}`);
+    })
+    .catch((e) => {
+      editedTxHash = editedTxHash.filter((h) => h !== myTx.hash);
+      if (editedTxHash.length === 0) {
+        console.log("Stop mempool tracking with an error...");
+        WsProvider.removeAllListeners("pending");
+        console.timeEnd(`liquidation#${borrowerAddress.toLowerCase()}`);
+      }
+    });
+  const track = borrowerAddress.slice(2, borrowerAddress.length);
+  let myGasCost = gasPrice;
+  let increasedGasCost;
+  const myPublicAddr = "0x00";
+  const wallet = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+  console.log("Start mempool tracking");
+  WsProvider.on("pending", async (tx) => {
+    WsProvider.getTransaction(tx).then(async (transaction) => {
+      if (transaction === null) return;
+      if (
+        transaction?.from?.toLowerCase() !== myPublicAddr.toLowerCase() &&
+        transaction?.data?.includes(track)
+      ) {
+        console.log(
+          "Found an address which trying to liquidate :",
+          transaction.from,
+        );
+        if (transaction.gasPrice.gt(myGasCost)) {
+          increasedGasCost = transaction.gasPrice.mul(11).div(10); // + 10% gas
+          const newTx = {
+            to,
+            from,
+            nonce,
+            gasLimit,
+            gasPrice: increasedGasCost,
+            data,
+            value,
+            chainId,
+            type,
+            accessList,
+          };
+          const signedTx = await wallet.signTransaction(newTx);
+          const tx = await provider.sendTransaction(signedTx);
+          tx.wait()
+            .then((r) => {
+              console.log("Stop mempool tracking with successful liquidation");
+              WsProvider.removeAllListeners("pending");
+              console.timeEnd(`liquidation#${borrowerAddress.toLowerCase()}`);
+            })
+            .catch((e) => {
+              editedTxHash = editedTxHash.filter((h) => h !== tx.hash);
+              if (editedTxHash.length === 0) {
+                console.log("Stop mempool tracking with an error...");
+                WsProvider.removeAllListeners("pending");
+                console.timeEnd(`liquidation#${borrowerAddress.toLowerCase()}`);
+              }
+            });
+          myGasCost = increasedGasCost;
+          editedTxHash.push(tx.hash);
+          // increase our gas cost
+        } else {
+          console.log(
+            "Our gas price is greater of ",
+            formatUnits(myGasCost.sub(transaction.gasPrice), "gwei"),
+            "gwei",
+          );
+        }
+      }
+    });
+    if (Date.now() - startTime > 30000) {
+      WsProvider.removeAllListeners("pending");
+      console.timeEnd(`liquidation#${borrowerAddress.toLowerCase()}`);
+      console.log("Stop mempool tracking due to timeout...");
+    }
+  });
+}

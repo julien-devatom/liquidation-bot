@@ -3,7 +3,7 @@
     "inputs": [
       {
         "internalType": "contract ILendingPoolAddressesProvider",
-        "name": "provider",
+        "name": "_provider",
         "type": "address"
       },
       {
@@ -14,6 +14,64 @@
     ],
     "stateMutability": "nonpayable",
     "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "AmountToSwapExceedMaxSlippage",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "CallerMustBeLendingPool",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InconsistentFlashLoansParams",
+    "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "_liquidator",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "_borrower",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "_debtMarket",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "_collateralMarket",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "_amount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "_amountRewarded",
+        "type": "uint256"
+      }
+    ],
+    "name": "Liquidated",
+    "type": "event"
   },
   {
     "anonymous": false,
@@ -32,6 +90,43 @@
       }
     ],
     "name": "OwnershipTransferred",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "_assetFrom",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "_addressTo",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amountIn",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amountOut",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint24",
+        "name": "fees",
+        "type": "uint24"
+      }
+    ],
+    "name": "Swap",
     "type": "event"
   },
   {
@@ -113,26 +208,6 @@
     "type": "function"
   },
   {
-    "inputs": [],
-    "name": "flashLoanFees",
-    "outputs": [
-      {
-        "internalType": "uint24",
-        "name": "",
-        "type": "uint24"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [],
-    "name": "kill",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
     "inputs": [
       {
         "internalType": "address",
@@ -153,6 +228,11 @@
         "internalType": "uint256",
         "name": "_amount",
         "type": "uint256"
+      },
+      {
+        "internalType": "uint24",
+        "name": "_fees",
+        "type": "uint24"
       }
     ],
     "name": "liquidate",
@@ -181,19 +261,6 @@
     "type": "function"
   },
   {
-    "inputs": [],
-    "name": "swapFees",
-    "outputs": [
-      {
-        "internalType": "uint24",
-        "name": "",
-        "type": "uint24"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
     "inputs": [
       {
         "internalType": "address",
@@ -218,9 +285,5 @@
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
-  },
-  {
-    "stateMutability": "payable",
-    "type": "receive"
   }
 ]
