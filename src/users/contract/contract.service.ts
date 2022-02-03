@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common";
-import { BigNumber, ethers, Wallet } from "ethers";
+import { BigNumber, ethers, Transaction, Wallet } from "ethers";
 import * as LendingPool from "../../abis/lendingPool.json";
 import * as DataProvider from "../../abis/ProtocolDataProvider.json";
 import * as PriceOracle from "../../abis/PriceOracle.json";
@@ -20,6 +20,37 @@ export interface MarketConfig {
 }
 
 export const RAY = BigNumber.from(10).pow(27);
+
+function computeSwapFees(
+  debtAssetAToken: string,
+  collateralAssetAToken: string,
+) {
+  const stableCoinsATokens = [
+    "0x27f8d03b3a2196956ed754badc28d73be8830a6e", // DAI
+    "0x1a13f4ca1d028320a707d99520abfefca3998b7f", // USDC,
+    "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", // USDT
+  ];
+  const exoticCoinsATokens = [
+    "0x0Ca2e42e8c21954af73Bc9af1213E4e81D6a669A".toLowerCase(), // LINK
+    "0x21eC9431B5B55c5339Eb1AE7582763087F98FAc2".toLowerCase(), // SUSHI
+    "0x3Df8f92b7E798820ddcCA2EBEA7BAbda2c90c4aD".toLowerCase(), // CRV
+    "0x81fB82aAcB4aBE262fc57F06fD4c1d2De347D7B1".toLowerCase(), // DPI
+    "0xc4195D4060DaEac44058Ed668AA5EfEc50D77ff6".toLowerCase(), // BAL
+    "0x080b5BF8f360F624628E0fb961F4e67c9e3c7CF1".toLowerCase(), // GHST
+  ];
+  let fees = "3000";
+  if (
+    stableCoinsATokens.includes(debtAssetAToken.toLowerCase()) &&
+    stableCoinsATokens.includes(collateralAssetAToken.toLowerCase())
+  )
+    fees = "500";
+  else if (
+    exoticCoinsATokens.includes(debtAssetAToken.toLowerCase()) ||
+    exoticCoinsATokens.includes(collateralAssetAToken.toLowerCase())
+  )
+    fees = "10000";
+  return fees;
+}
 
 @Injectable()
 export class ContractService {
@@ -46,7 +77,7 @@ export class ContractService {
     },
   };
 
-  private provider = new ethers.providers.JsonRpcProvider(
+  provider = new ethers.providers.JsonRpcProvider(
     this.config.network.RPC,
     this.config.network.chainID,
   );
@@ -148,9 +179,14 @@ export class ContractService {
     collateralAssetAToken: string,
     borrower: string,
     debtAmount: BigNumber,
+    gasPrice: BigNumber,
   ) {
     const signer = new Wallet(process.env.PRIVATE_KEY, this.provider);
-
+    const fees = computeSwapFees(debtAssetAToken, collateralAssetAToken);
+    console.timeLog(
+      `liquidation#${borrower.toLowerCase()}`,
+      "Call to Liquidator contract",
+    );
     const liquidationContract = new ethers.Contract(
       this.config.LIQUIDATION_WRAPPER.address,
       this.config.LIQUIDATION_WRAPPER.abi,
@@ -163,7 +199,9 @@ export class ContractService {
         debtAssetAToken,
         collateralAssetAToken,
         debtAmount.toString(),
+        fees,
         {
+          gasPrice,
           gasLimit: 28_000_000, // gasLimit is 30M for polygon
         },
       );
@@ -211,4 +249,44 @@ export interface UserWithBalances {
   currentLiquidationThreshold: BigNumber;
   healthFactor: BigNumber;
   balances: BalanceWithMarket[];
+}
+
+export interface TransactionResponse extends Transaction {
+  hash: string;
+
+  // Only if a transaction has been mined
+  blockNumber?: number;
+  blockHash?: string;
+  timestamp?: number;
+
+  confirmations: number;
+
+  // Not optional (as it is in Transaction)
+  from: string;
+
+  // The raw transaction
+  raw?: string;
+
+  // This function waits until the transaction has been mined
+  wait: (confirmations?: number) => Promise<TransactionReceipt>;
+}
+
+export interface TransactionReceipt {
+  to: string;
+  from: string;
+  contractAddress: string;
+  transactionIndex: number;
+  root?: string;
+  gasUsed: BigNumber;
+  logsBloom: string;
+  blockHash: string;
+  transactionHash: string;
+  logs: Array<any>;
+  blockNumber: number;
+  confirmations: number;
+  cumulativeGasUsed: BigNumber;
+  effectiveGasPrice: BigNumber;
+  byzantium: boolean;
+  type: number;
+  status?: number;
 }
